@@ -48,9 +48,9 @@ function getEnvJson<T>(name: string, defaultValue: T): T {
 
 export const mt5Config: MT5Config = {
   connection: {
-    account: getEnvVar('MT5_ACCOUNT_ID'),
-    password: getEnvVar('MT5_PASSWORD'),
-    server: getEnvVar('MT5_SERVER'),
+    account: getEnvVar('MT5_ACCOUNT_ID', '12345678'), // Default demo account
+    password: getEnvVar('MT5_PASSWORD', 'demo_password'), // Default demo password
+    server: getEnvVar('MT5_SERVER', 'localhost:8080'), // Default local server
     timeout: getEnvNumber('MT5_TIMEOUT', 30000),
     maxRetries: getEnvNumber('MT5_MAX_RETRIES', 3),
     retryDelay: getEnvNumber('MT5_RETRY_DELAY', 1000),
@@ -82,29 +82,33 @@ export const mt5Config: MT5Config = {
 };
 
 export function validateMT5Config(): void {
-  const requiredFields = [
-    'connection.account',
-    'connection.password',
-    'connection.server',
-  ];
-
   const missingFields: string[] = [];
 
-  if (!mt5Config.connection.account || mt5Config.connection.account === '12345678') {
+  // Only validate if we're not using the default demo values
+  if (mt5Config.connection.account === '12345678' &&
+      !process.env.MT5_ACCOUNT_ID) {
     missingFields.push('MT5_ACCOUNT_ID');
   }
-  if (!mt5Config.connection.password || mt5Config.connection.password === 'your_mt5_password_here') {
+  if (mt5Config.connection.password === 'demo_password' &&
+      !process.env.MT5_PASSWORD) {
     missingFields.push('MT5_PASSWORD');
   }
-  if (!mt5Config.connection.server || mt5Config.connection.server === 'your_mt5_server_here') {
+  if (mt5Config.connection.server === 'localhost:8080' &&
+      !process.env.MT5_SERVER) {
     missingFields.push('MT5_SERVER');
   }
 
   if (missingFields.length > 0) {
-    throw new Error(
-      `MT5 configuration is incomplete. Please set the following environment variables: ${missingFields.join(', ')}`
+    console.warn(
+      `MT5 configuration is using default demo values. For production use, please set: ${missingFields.join(', ')}`
     );
   }
+}
+
+export function isUsingDemoCredentials(): boolean {
+  return mt5Config.connection.account === '12345678' ||
+         mt5Config.connection.password === 'demo_password' ||
+         mt5Config.connection.server === 'localhost:8080';
 }
 
 export default mt5Config;

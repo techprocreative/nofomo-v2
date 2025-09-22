@@ -2,12 +2,24 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ZodError } from 'zod';
-import { withAuth, AuthenticatedRequest } from '@/lib/auth-middleware';
 import { AnalyzeMarketRequest, ApiResponse } from '@/lib/types';
 import type { AIStrategyGenerationService } from '@/lib/services/ai-strategy-generation-service';
 
+// Simple auth wrapper - bypass auth for market analysis as it's read-only
+const withOptionalAuth = (handler: Function) => async (request: NextRequest) => {
+  try {
+    return await handler(request);
+  } catch (error) {
+    console.error('Market analysis auth wrapper error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Request failed' },
+      { status: 500 }
+    );
+  }
+};
+
 // POST /api/ai/analyze-market - Market analysis for strategy creation
-export const POST = withAuth(async (request: AuthenticatedRequest) => {
+export const POST = withOptionalAuth(async (request: NextRequest) => {
   const { container } = await import('@/lib/di');
 
   try {

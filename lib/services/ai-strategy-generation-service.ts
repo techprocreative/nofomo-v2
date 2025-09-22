@@ -177,6 +177,7 @@ export class AIStrategyGenerationService implements IAIStrategyGenerationService
   ) {
     // Initialize OpenRouter service lazily to avoid DI container issues
     this.initializeOpenRouter();
+    console.log('AIStrategyGenerationService initialized with OpenRouter');
   }
 
   private initializeOpenRouter() {
@@ -820,28 +821,180 @@ export class AIStrategyGenerationService implements IAIStrategyGenerationService
   private predictStrategyPerformance(strategy: AIGeneratedStrategy, backtest: BacktestResult): StrategyPerformancePrediction {
     const baseReturn = backtest.performance_metrics.total_return;
     const baseDrawdown = backtest.performance_metrics.max_drawdown;
+    const winRate = backtest.performance_metrics.win_rate;
+    const totalTrades = backtest.trade_log.length;
+
+    // Advanced statistical calculations
+    const trades = backtest.trade_log;
+    const winningTrades = trades.filter(t => t.profit_loss > 0);
+    const losingTrades = trades.filter(t => t.profit_loss < 0);
+
+    // Calculate advanced metrics
+    const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum, t) => sum + t.profit_loss, 0) / winningTrades.length : 0;
+    const avgLoss = losingTrades.length > 0 ? Math.abs(losingTrades.reduce((sum, t) => sum + t.profit_loss, 0) / losingTrades.length) : 0;
+    const profitFactor = avgLoss > 0 ? (avgWin * winRate) / (avgLoss * (1 - winRate)) : 0;
+
+    // Kelly Criterion calculation
+    const kellyPercentage = winRate > 0 && avgLoss > 0 ? ((winRate * avgWin / avgLoss) - (1 - winRate)) / (avgWin / avgLoss) : 0;
+
+    // Risk-adjusted return calculations
+    const riskAdjustedReturn = baseDrawdown > 0 ? baseReturn / baseDrawdown : baseReturn;
+    const ulcerIndex = this.calculateUlcerIndex(backtest.equity_curve);
+    const sterlingRatio = baseDrawdown > 0 ? baseReturn / ulcerIndex : baseReturn;
+
+    // Out-of-sample adjustment (assume 70-90% of in-sample performance)
+    const outOfSampleAdjustment = 0.75 + Math.random() * 0.15;
+    const predictedReturn = baseReturn * outOfSampleAdjustment;
+
+    // Advanced drawdown prediction based on volatility
+    const historicalVolatility = this.calculateHistoricalVolatility(trades);
+    const predictedDrawdown = Math.max(baseDrawdown, baseDrawdown * (1 + historicalVolatility * 0.5));
+
+    // Win rate prediction with regression to mean
+    const predictedWinRate = Math.max(0.45, Math.min(0.65, winRate + (0.5 - winRate) * 0.3));
+
+    // Confidence interval based on sample size
+    const standardError = totalTrades > 0 ? Math.sqrt((winRate * (1 - winRate)) / totalTrades) : 0;
+    const confidenceMultiplier = totalTrades > 30 ? 1.96 : 2.58; // 95% or 99% confidence
+    const marginOfError = confidenceMultiplier * standardError;
+
+    // Determine market conditions based on strategy and backtest
+    const marketConditions = this.analyzeMarketConditionsForStrategy(strategy, backtest);
 
     return {
       strategy_id: strategy.id,
-      predicted_return: baseReturn * (0.8 + Math.random() * 0.4), // 80%-120% of backtest
-      predicted_drawdown: baseDrawdown * (0.9 + Math.random() * 0.3), // 90%-120% of backtest
-      predicted_win_rate: backtest.performance_metrics.win_rate * (0.95 + Math.random() * 0.1),
+      predicted_return: Math.max(-0.5, Math.min(1.0, predictedReturn)), // Cap between -50% and +100%
+      predicted_drawdown: Math.min(0.5, predictedDrawdown), // Cap at 50%
+      predicted_win_rate: predictedWinRate,
       confidence_interval: {
-        lower: baseReturn * 0.7,
-        upper: baseReturn * 1.3
+        lower: Math.max(-0.3, baseReturn - marginOfError * baseReturn),
+        upper: Math.min(0.8, baseReturn + marginOfError * baseReturn)
       },
       risk_metrics: {
-        sharpe_ratio: backtest.performance_metrics.sharpe_ratio,
-        sortino_ratio: backtest.performance_metrics.sortino_ratio,
-        max_drawdown: baseDrawdown,
-        value_at_risk: backtest.performance_metrics.value_at_risk
+        sharpe_ratio: baseReturn / (baseDrawdown || 0.01), // Avoid division by zero
+        sortino_ratio: baseReturn / (this.calculateDownsideDeviation(trades) || 0.01),
+        max_drawdown: predictedDrawdown,
+        value_at_risk: this.calculateValueAtRisk(trades, 0.95),
+        ulcer_index: ulcerIndex,
+        sterling_ratio: sterlingRatio,
+        kelly_percentage: Math.max(0, Math.min(0.25, kellyPercentage)), // Cap Kelly at 25%
+        profit_factor: profitFactor,
+        risk_adjusted_return: riskAdjustedReturn,
+        calmar_ratio: baseDrawdown > 0 ? baseReturn / baseDrawdown : 0,
+        information_ratio: this.calculateInformationRatio(trades)
       },
       prediction_date: new Date(),
-      prediction_horizon: '3M',
-      market_conditions_assumed: {
-        volatility: 'moderate',
-        trend: 'mixed'
-      }
+      prediction_horizon: totalTrades > 100 ? '6M' : '3M',
+      market_conditions_assumed: marketConditions
+    };
+  }
+
+  private calculateUlcerIndex(equityCurve: Array<{ timestamp: Date; equity: number }>): number {
+    if (equityCurve.length < 2) return 0;
+
+    let maxEquity = equityCurve[0].equity;
+    let ulcerSum = 0;
+
+    for (const point of equityCurve) {
+      maxEquity = Math.max(maxEquity, point.equity);
+      const drawdown = (maxEquity - point.equity) / maxEquity;
+      ulcerSum += drawdown * drawdown;
+    }
+
+    return Math.sqrt(ulcerSum / equityCurve.length);
+  }
+
+  private calculateHistoricalVolatility(trades: any[]): number {
+    if (trades.length < 2) return 0.1;
+
+    const returns = [];
+    for (let i = 1; i < trades.length; i++) {
+      const prevEquity = 10000 + trades.slice(0, i).reduce((sum, t) => sum + t.profit_loss, 0);
+      const currentEquity = 10000 + trades.slice(0, i + 1).reduce((sum, t) => sum + t.profit_loss, 0);
+      returns.push((currentEquity - prevEquity) / prevEquity);
+    }
+
+    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+
+    return Math.sqrt(variance * 252); // Annualized
+  }
+
+  private calculateDownsideDeviation(trades: any[]): number {
+    if (trades.length < 2) return 0.1;
+
+    const returns = [];
+    for (let i = 1; i < trades.length; i++) {
+      const prevEquity = 10000 + trades.slice(0, i).reduce((sum, t) => sum + t.profit_loss, 0);
+      const currentEquity = 10000 + trades.slice(0, i + 1).reduce((sum, t) => sum + t.profit_loss, 0);
+      returns.push((currentEquity - prevEquity) / prevEquity);
+    }
+
+    const downsideReturns = returns.filter(r => r < 0);
+    if (downsideReturns.length === 0) return 0.01;
+
+    const downsideVariance = downsideReturns.reduce((sum, r) => sum + r * r, 0) / downsideReturns.length;
+    return Math.sqrt(downsideVariance);
+  }
+
+  private calculateValueAtRisk(trades: any[], confidence: number): number {
+    if (trades.length < 2) return -0.05;
+
+    const returns = [];
+    for (let i = 1; i < trades.length; i++) {
+      const prevEquity = 10000 + trades.slice(0, i).reduce((sum, t) => sum + t.profit_loss, 0);
+      const currentEquity = 10000 + trades.slice(0, i + 1).reduce((sum, t) => sum + t.profit_loss, 0);
+      returns.push((currentEquity - prevEquity) / prevEquity);
+    }
+
+    returns.sort((a, b) => a - b);
+    const index = Math.floor((1 - confidence) * returns.length);
+    return returns[index] || -0.05;
+  }
+
+  private calculateInformationRatio(trades: any[]): number {
+    if (trades.length < 10) return 0;
+
+    // Simplified information ratio (active return / tracking error)
+    const returns = [];
+    for (let i = 1; i < trades.length; i++) {
+      const prevEquity = 10000 + trades.slice(0, i).reduce((sum, t) => sum + t.profit_loss, 0);
+      const currentEquity = 10000 + trades.slice(0, i + 1).reduce((sum, t) => sum + t.profit_loss, 0);
+      returns.push((currentEquity - prevEquity) / prevEquity);
+    }
+
+    const benchmarkReturn = 0.0001; // Assume 0.01% daily benchmark
+    const activeReturns = returns.map(r => r - benchmarkReturn);
+    const avgActiveReturn = activeReturns.reduce((sum, r) => sum + r, 0) / activeReturns.length;
+    const trackingError = Math.sqrt(activeReturns.reduce((sum, r) => sum + Math.pow(r - avgActiveReturn, 2), 0) / activeReturns.length);
+
+    return trackingError > 0 ? avgActiveReturn / trackingError : 0;
+  }
+
+  private analyzeMarketConditionsForStrategy(strategy: AIGeneratedStrategy, backtest: BacktestResult): Record<string, any> {
+    const totalReturn = backtest.performance_metrics.total_return;
+    const maxDrawdown = backtest.performance_metrics.max_drawdown;
+    const winRate = backtest.performance_metrics.win_rate;
+    const volatility = this.calculateHistoricalVolatility(backtest.trade_log);
+
+    let volatilityLevel = 'low';
+    if (volatility > 0.3) volatilityLevel = 'high';
+    else if (volatility > 0.15) volatilityLevel = 'moderate';
+
+    let trendCondition = 'mixed';
+    if (totalReturn > 0.1) trendCondition = 'bullish';
+    else if (totalReturn < -0.05) trendCondition = 'bearish';
+
+    let riskLevel = 'moderate';
+    if (maxDrawdown > 0.15) riskLevel = 'high';
+    else if (maxDrawdown < 0.05) riskLevel = 'low';
+
+    return {
+      volatility: volatilityLevel,
+      trend: trendCondition,
+      risk_level: riskLevel,
+      market_regime: winRate > 0.6 ? 'trending' : winRate < 0.4 ? 'ranging' : 'mixed',
+      expected_confidence: winRate > 0.55 ? 'high' : winRate > 0.45 ? 'moderate' : 'low'
     };
   }
 

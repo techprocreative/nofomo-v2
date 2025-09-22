@@ -583,6 +583,13 @@ export interface StrategyPerformancePrediction {
     sortino_ratio: number;
     max_drawdown: number;
     value_at_risk: number;
+    ulcer_index?: number;
+    sterling_ratio?: number;
+    kelly_percentage?: number;
+    profit_factor?: number;
+    risk_adjusted_return?: number;
+    calmar_ratio?: number;
+    information_ratio?: number;
   };
   prediction_date: Date;
   prediction_horizon: string; // e.g., '1M', '3M', '1Y'

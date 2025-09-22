@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Bot, Play, Pause, Settings, Plus, Activity, DollarSign, TrendingUp, AlertCircle } from "lucide-react"
+import { MT5ConnectionSettings } from "./mt5-connection-settings"
 
 const mockBots = [
   {
@@ -137,36 +138,8 @@ export function MT5BotsPanel() {
         </Card>
       </div>
 
-      {/* MT5 Connection Status */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Settings className="w-5 h-5" />
-            MT5 Connection Status
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between p-4 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-              <div>
-                <h3 className="font-medium text-green-800 dark:text-green-200">Connected to MT5</h3>
-                <p className="text-sm text-green-700 dark:text-green-300">
-                  Server: ICMarkets-Demo01 | Account: 12345678
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-green-300 text-green-700 hover:bg-green-100 bg-transparent"
-            >
-              <Settings className="w-4 h-4 mr-2" />
-              Configure
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* MT5 Connection Settings */}
+      <MT5ConnectionSettings />
 
       {/* Bots List */}
       <Card>
