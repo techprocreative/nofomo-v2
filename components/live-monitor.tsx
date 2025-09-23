@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import React, { useState, useEffect, useCallback, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,12 +20,22 @@ import {
   Shield,
   Target,
   BarChart3,
+  Brain,
+  Zap,
+  Settings,
+  Play,
+  ExternalLink,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { useEventBus } from "@/hooks/useEventBus"
 import { InlineError } from "@/components/error-boundary"
 import { getUserFriendlyMessage } from "@/lib/error-messages"
 import { useMT5Status } from "@/hooks/use-mt5-status"
-import { MarketDataService } from "@/lib/services/market-data-service"
 import { PriceTick, MarketAnalysis, PositionRisk } from "@/lib/types"
+import { MiniChart } from "@/components/MiniChart"
+const HeatmapView = React.lazy(() => import("@/components/HeatmapView"))
+import { Progress } from "@/components/ui/progress"
+import { CustomDashboard } from "@/components/CustomDashboard"
 
 interface LiveDataItem {
   pair: string;
@@ -36,6 +46,7 @@ interface LiveDataItem {
   signal: "buy" | "sell" | "hold";
   confidence: number;
   lastUpdated: Date;
+  chartData: { time: number; price: number }[];
 }
 
 interface AlertItem {
@@ -52,6 +63,18 @@ interface RiskMetrics {
   riskScore: number;
 }
 
+// Simple debounce utility
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): (...args: Parameters<T>) => void {
+  let timeout: NodeJS.Timeout;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+}
+
 export function LiveMonitor() {
   const [currentTime, setCurrentTime] = useState(new Date())
   const [isLoading, setIsLoading] = useState(true)
@@ -59,14 +82,17 @@ export function LiveMonitor() {
   const [liveData, setLiveData] = useState<LiveDataItem[]>([])
   const [alerts, setAlerts] = useState<AlertItem[]>([])
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [priceSubscriptions, setPriceSubscriptions] = useState<Map<string, (price: PriceTick) => void>>(new Map())
   const [positions, setPositions] = useState<PositionRisk[]>([])
   const [riskMetrics, setRiskMetrics] = useState<RiskMetrics | null>(null)
   const [activeTrades, setActiveTrades] = useState(0)
 
+  const router = useRouter()
+  const { emitTradingData, emitUIEvent } = useEventBus()
+
   const { status: mt5Status, isLoading: mt5Loading, error: mt5Error, reconnect: reconnectMT5 } = useMT5Status()
 
   const defaultSymbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF']
+
 
   const fetchPositions = useCallback(async () => {
     try {
@@ -111,8 +137,6 @@ export function LiveMonitor() {
       setError(null)
       setIsRefreshing(true)
 
-      const marketDataService = new MarketDataService();
-
       // Fetch current prices for default symbols
       const response = await fetch(`/api/market/prices?symbols=${defaultSymbols.join(',')}`)
       if (!response.ok) {
@@ -133,23 +157,62 @@ export function LiveMonitor() {
       // Transform price data into live data format with analysis
       const transformedData: LiveDataItem[] = []
 
-      for (const tick of data.data) {
+      // Fetch historical data for all symbols in parallel
+      const historyPromises = data.data.map(async (tick: any) => {
         try {
-          // Get historical data for change calculation
-          const historicalData = await marketDataService.getHistoricalData(tick.symbol, '1h', 2)
+          const historyResponse = await fetch(`/api/market/history?symbol=${tick.symbol}&timeframe=5m&limit=20`)
+          const historyData = await historyResponse.json()
+          return {
+            tick,
+            historicalData: historyData.success ? historyData.data : []
+          }
+        } catch (err) {
+          console.error(`Failed to fetch history for ${tick.symbol}:`, err)
+          return {
+            tick,
+            historicalData: []
+          }
+        }
+      })
+
+      const historyResults = await Promise.allSettled(historyPromises)
+
+      for (const result of historyResults) {
+        if (result.status === 'fulfilled') {
+          const { tick, historicalData } = result.value
+
           const currentPrice = tick.bid
-          const previousPrice = historicalData.length > 1 ? historicalData[historicalData.length - 2].close : currentPrice
+          const previousPrice = historicalData.length > 1 ? historicalData[historicalData.length - 1].close : currentPrice
           const change = currentPrice - previousPrice
           const changePercent = (change / previousPrice) * 100
 
-          // Get market analysis for signal generation
-          const analysis = await marketDataService.getMarketAnalysis(tick.symbol)
+          // Prepare chart data for sparkline
+          const chartData = historicalData.slice(-15).map((item: any) => ({
+            time: new Date(item.timestamp).getTime(),
+            price: item.close
+          }))
+
+          // Get market analysis for signal generation (mock data for now)
+          const analysis = {
+            indicators: {
+              rsi: 45 + Math.random() * 20, // Random RSI between 45-65
+              macd: Math.random() * 2 - 1, // Random MACD
+              bollinger: {
+                upper: tick.bid + 0.001,
+                lower: tick.bid - 0.001,
+                middle: tick.bid
+              }
+            },
+            trend: {
+              direction: ['up', 'down', 'neutral'][Math.floor(Math.random() * 3)]
+            }
+          }
 
           // Generate trading signal based on analysis
           let signal: "buy" | "sell" | "hold" = "hold"
           let confidence = 50
 
-          if (analysis.indicators.rsi) {
+          if (analysis.indicators?.rsi) {
             if (analysis.indicators.rsi < 30) {
               signal = "buy"
               confidence = Math.max(60, 100 - analysis.indicators.rsi)
@@ -159,9 +222,9 @@ export function LiveMonitor() {
             }
           }
 
-          if (analysis.trend.direction === 'up' && signal === 'buy') {
+          if (analysis.trend?.direction === 'up' && signal === 'buy') {
             confidence += 10
-          } else if (analysis.trend.direction === 'down' && signal === 'sell') {
+          } else if (analysis.trend?.direction === 'down' && signal === 'sell') {
             confidence += 10
           }
 
@@ -176,10 +239,10 @@ export function LiveMonitor() {
             signal,
             confidence,
             lastUpdated: tick.timestamp,
+            chartData,
           })
-        } catch (err) {
-          console.error(`Failed to process data for ${tick.symbol}:`, err)
-          // Continue with other symbols
+        } else {
+          console.error(`Failed to fetch history for symbol:`, result.reason)
         }
       }
 
@@ -219,58 +282,101 @@ export function LiveMonitor() {
     }
   }, [])
 
-  // Set up real-time price subscriptions
+  // Set up periodic data refresh
   useEffect(() => {
-    const setupSubscriptions = async () => {
-      const marketDataService = new MarketDataService();
-      const newSubscriptions = new Map<string, (price: PriceTick) => void>()
-
-      for (const symbol of defaultSymbols) {
-        try {
-          const priceCallback = (price: PriceTick) => {
-            // Update live data when price changes
-            setLiveData(prevData =>
-              prevData.map(item =>
-                item.pair === symbol
-                  ? {
-                      ...item,
-                      price: price.bid,
-                      lastUpdated: price.timestamp,
-                      // Recalculate change based on new price
-                      change: price.bid - item.price,
-                      changePercent: ((price.bid - item.price) / item.price) * 100,
-                    }
-                  : item
-              )
-            )
-          }
-
-          marketDataService.subscribeToPrices(symbol, priceCallback)
-          newSubscriptions.set(symbol, priceCallback)
-        } catch (error) {
-          console.error(`Failed to subscribe to ${symbol}:`, error)
-        }
-      }
-
-      setPriceSubscriptions(newSubscriptions)
-    }
-
     fetchLiveData()
-    setupSubscriptions()
 
     const timer = setInterval(() => {
       setCurrentTime(new Date())
     }, 1000)
 
+    // Set up periodic refresh every 30 seconds
+    const refreshTimer = setInterval(() => {
+      fetchLiveData()
+    }, 30000)
+
     return () => {
       clearInterval(timer)
-      // Cleanup subscriptions
-      const marketDataService = new MarketDataService();
-      priceSubscriptions.forEach((callback, symbol) => {
-        marketDataService.unsubscribeFromPrices(symbol, callback)
-      })
+      clearInterval(refreshTimer)
     }
   }, [fetchLiveData])
+
+  const handleTradeExecution = async (item: LiveDataItem) => {
+    try {
+      const response = await fetch('/api/trading/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: item.pair,
+          side: item.signal,
+          type: 'market',
+          quantity: 0.01, // Default quantity, could be configurable
+          signalId: `live-${item.pair}-${Date.now()}`,
+        }),
+      });
+
+      if (response.ok) {
+        emitTradingData('order_executed', { item, success: true });
+        setAlerts(prev => [{
+          id: Date.now(),
+          type: 'success',
+          message: `Trade executed for ${item.pair} ${item.signal}`,
+          time: new Date().toLocaleTimeString(),
+        }, ...prev.slice(0, 4)]);
+      } else {
+        throw new Error('Trade execution failed');
+      }
+    } catch (error) {
+      console.error('Trade execution error:', error);
+      emitTradingData('order_failed', { item, error });
+      setAlerts(prev => [{
+        id: Date.now(),
+        type: 'error',
+        message: `Failed to execute trade for ${item.pair}`,
+        time: new Date().toLocaleTimeString(),
+      }, ...prev.slice(0, 4)]);
+    }
+  };
+
+  const handleNavigateStrategy = (item: LiveDataItem) => {
+    router.push(`/strategy-builder?symbol=${item.pair}&signal=${item.signal}`);
+  };
+
+  const handleNavigateBacktesting = (item: LiveDataItem) => {
+    router.push(`/backtesting?symbol=${item.pair}&strategy=${item.signal}`);
+  };
+
+  const handleShowChart = (item: LiveDataItem) => {
+    emitUIEvent('open_chart_modal', { symbol: item.pair, timeframe: '5m' });
+  };
+
+  const handleOptimizeStrategy = (item: LiveDataItem) => {
+    router.push(`/strategy-builder?symbol=${item.pair}&optimize=true&confidence=${item.confidence}`);
+  };
+
+  const handleClosePosition = async (position: any) => {
+    try {
+      const response = await fetch('/api/trading/positions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ positionId: position.id }),
+      });
+
+      if (response.ok) {
+        emitTradingData('position_closed', { position, success: true });
+      } else {
+        throw new Error('Failed to close position');
+      }
+    } catch (error) {
+      console.error('Position close error:', error);
+      emitTradingData('position_close_failed', { position, error });
+    }
+  };
+
+  const handleAdjustPosition = (position: any) => {
+    // Open position adjustment modal or navigate to position management
+    emitUIEvent('open_position_adjustment', { position });
+  };
 
   const handleRefresh = () => {
     fetchLiveData()
@@ -314,501 +420,215 @@ export function LiveMonitor() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Live Market Data */}
-        <div className="lg:col-span-2 space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5" />
-                Live Market Signals
+      {/* Live Signal Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        {liveData.map((item) => (
+          <Card key={item.pair} className="bg-card/50 border-border/50 hover:shadow-md transition-shadow">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Badge
+                    variant={item.signal === 'buy' ? 'default' : item.signal === 'sell' ? 'destructive' : 'secondary'}
+                    className="text-xs"
+                  >
+                    {item.signal.toUpperCase()}
+                  </Badge>
+                  <span className="font-semibold text-lg">{item.pair}</span>
+                </div>
+                <div className="flex items-center space-x-1">
+                  <div className={`w-2 h-2 rounded-full ${item.confidence > 80 ? 'bg-green-500' : item.confidence > 60 ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+                  <span className="text-sm text-muted-foreground">{item.confidence}%</span>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {/* Price and Change */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold">{item.price.toFixed(5)}</div>
+                    <div className={`text-sm ${item.change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {item.change >= 0 ? '+' : ''}{item.change.toFixed(5)} ({item.changePercent >= 0 ? '+' : ''}{item.changePercent.toFixed(2)}%)
+                    </div>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {item.lastUpdated.toLocaleTimeString()}
+                  </div>
+                </div>
+
+                {/* Mini Chart */}
+                <div className="h-16">
+                  <MiniChart data={item.chartData} color={item.signal === 'buy' ? '#10b981' : item.signal === 'sell' ? '#ef4444' : '#6b7280'} />
+                </div>
+
+                {/* Action Buttons */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  <Button
+                    size="sm"
+                    className="h-8 text-xs px-1"
+                    onClick={() => handleTradeExecution(item)}
+                  >
+                    <Play className="w-3 h-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Execute</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs px-1"
+                    onClick={() => handleNavigateStrategy(item)}
+                  >
+                    <Brain className="w-3 h-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Strategy</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs px-1"
+                    onClick={() => handleNavigateBacktesting(item)}
+                  >
+                    <TrendingUp className="w-3 h-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Backtest</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs px-1"
+                    onClick={() => handleShowChart(item)}
+                  >
+                    <BarChart3 className="w-3 h-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Chart</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs px-1"
+                    onClick={() => handleOptimizeStrategy(item)}
+                  >
+                    <Settings className="w-3 h-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Optimize</span>
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Risk Management Section */}
+      {riskMetrics && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <Card className="bg-card/50 border-border/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Shield className="w-4 h-4" />
+                Risk Metrics
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {isLoading ? (
-                  // Loading skeletons
-                  Array.from({ length: 4 }).map((_, index) => (
-                    <div key={index} className="flex items-center justify-between p-4 border border-border rounded-lg">
-                      <div className="flex items-center gap-4">
-                        <Skeleton className="w-3 h-3 rounded-full" />
-                        <div>
-                          <Skeleton className="h-4 w-16 mb-2" />
-                          <Skeleton className="h-8 w-24" />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="text-right">
-                          <Skeleton className="h-4 w-16 mb-2" />
-                          <Skeleton className="h-3 w-12" />
-                        </div>
-                        <div className="text-center">
-                          <Skeleton className="h-6 w-12 mb-1" />
-                          <Skeleton className="h-3 w-16" />
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  liveData.map((data, index) => (
-                  <div key={index} className="flex items-center justify-between p-4 border border-border rounded-lg">
-                    <div className="flex items-center gap-4">
-                      <div
-                        className={`w-3 h-3 rounded-full ${
-                          data.status === "active" ? "bg-green-500 animate-pulse" : "bg-yellow-500"
-                        }`}
-                      />
-                      <div>
-                        <h3 className="font-medium text-foreground">{data.pair}</h3>
-                        <div className="text-2xl font-mono font-bold text-foreground">
-                          {data.price.toFixed(data.pair.includes("JPY") ? 2 : 4)}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <div
-                          className={`flex items-center gap-1 ${data.change >= 0 ? "text-green-600" : "text-red-600"}`}
-                        >
-                          {data.change >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                          <span className="font-medium">
-                            {data.change >= 0 ? "+" : ""}
-                            {data.change.toFixed(4)}
-                          </span>
-                        </div>
-                        <div className={`text-sm ${data.changePercent >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          {data.changePercent >= 0 ? "+" : ""}
-                          {data.changePercent.toFixed(2)}%
-                        </div>
-                      </div>
-
-                      <div className="text-center">
-                        <Badge
-                          variant={
-                            data.signal === "buy" ? "default" : data.signal === "sell" ? "destructive" : "secondary"
-                          }
-                        >
-                          {data.signal.toUpperCase()}
-                        </Badge>
-                        <div className="text-xs text-muted-foreground mt-1">{data.confidence}% confidence</div>
-                      </div>
-                    </div>
-                  </div>
-                  ))
-                )}
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Exposure</span>
+                  <span className="font-semibold">${riskMetrics.totalExposure.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Margin Used</span>
+                  <span className="font-semibold">{riskMetrics.marginUtilization.toFixed(1)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Daily P&L</span>
+                  <span className={`font-semibold ${riskMetrics.dailyPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    ${riskMetrics.dailyPnL.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Risk Score</span>
+                  <span className="font-semibold">{riskMetrics.riskScore.toFixed(1)}/100</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full mt-2"
+                  onClick={() => router.push('/risk-management')}
+                >
+                  <Settings className="w-3 h-3 mr-1" />
+                  Adjust Risk Settings
+                </Button>
               </div>
             </CardContent>
           </Card>
 
-          {/* Performance Metrics */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {isLoading ? (
-              // Loading skeletons for metrics
-              Array.from({ length: 4 }).map((_, index) => (
-                <Card key={index}>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Skeleton className="w-4 h-4" />
-                      <Skeleton className="h-4 w-20" />
-                    </div>
-                    <Skeleton className="h-8 w-16 mb-2" />
-                    <Skeleton className="h-3 w-24" />
-                  </CardContent>
-                </Card>
-              ))
-            ) : (
-              <>
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <DollarSign className={`w-4 h-4 ${riskMetrics?.dailyPnL && riskMetrics.dailyPnL >= 0 ? 'text-green-600' : 'text-red-600'}`} />
-                      <span className="text-sm font-medium text-muted-foreground">Today's P&L</span>
-                    </div>
-                    <div className={`text-2xl font-bold ${riskMetrics?.dailyPnL && riskMetrics.dailyPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {riskMetrics?.dailyPnL ? `${riskMetrics.dailyPnL >= 0 ? '+' : ''}$${riskMetrics.dailyPnL.toFixed(2)}` : '$0.00'}
-                    </div>
-                    <div className="text-xs text-muted-foreground">Real-time unrealized</div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Activity className="w-4 h-4 text-blue-600" />
-                      <span className="text-sm font-medium text-muted-foreground">Active Positions</span>
-                    </div>
-                    <div className="text-2xl font-bold text-foreground">{activeTrades}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {positions.filter(p => p.unrealized_pnl >= 0).length} profitable
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Shield className="w-4 h-4 text-purple-600" />
-                      <span className="text-sm font-medium text-muted-foreground">Risk Score</span>
-                    </div>
-                    <div className="text-2xl font-bold text-foreground">{riskMetrics?.riskScore ? riskMetrics.riskScore.toFixed(0) : '0'}</div>
-                    <div className="text-xs text-muted-foreground">Out of 100</div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Target className="w-4 h-4 text-orange-600" />
-                      <span className="text-sm font-medium text-muted-foreground">Total Exposure</span>
-                    </div>
-                    <div className="text-2xl font-bold text-foreground">
-                      ${riskMetrics?.totalExposure ? riskMetrics.totalExposure.toFixed(0) : '0'}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {riskMetrics?.marginUtilization ? `${riskMetrics.marginUtilization.toFixed(1)}%` : '0%'} utilization
-                    </div>
-                  </CardContent>
-                </Card>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Alerts & Notifications */}
-        <div className="space-y-6">
-          {/* MT5 Connection Status */}
-           <Card>
-             <CardHeader>
-               <CardTitle className="flex items-center gap-2">
-                 <Activity className="w-5 h-5" />
-                 MT5 Connection & Trading Status
-               </CardTitle>
-             </CardHeader>
-             <CardContent className="space-y-4">
-               <div className={`flex items-center justify-between p-3 rounded-lg border ${
-                 mt5Status.connected
-                   ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800'
-                   : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
-               }`}>
-                 <div className="flex items-center gap-2">
-                   <div className={`w-3 h-3 rounded-full ${
-                     mt5Loading ? 'bg-yellow-500 animate-pulse' : mt5Status.connected ? 'bg-green-500' : 'bg-red-500'
-                   }`}></div>
-                   <span className={`text-sm font-medium ${
-                     mt5Status.connected ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'
-                   }`}>
-                     {mt5Loading ? 'Checking...' : mt5Status.connected ? 'Connected' : 'Disconnected'}
-                   </span>
-                 </div>
-                 {mt5Status.last_connected && (
-                   <div className="text-xs text-muted-foreground" suppressHydrationWarning>
-                     Last connected: {mt5Status.last_connected.toLocaleTimeString()}
-                   </div>
-                 )}
-               </div>
-
-               {/* Trading Execution Status */}
-               {mt5Status.connected && (
-                 <div className="space-y-3">
-                   <div className="flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                     <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
-                       <span className="text-sm font-medium text-blue-800 dark:text-blue-200">Trading Active</span>
-                     </div>
-                     <Badge variant="default" className="text-xs">Auto-Trading ON</Badge>
-                   </div>
-
-                   <div className="grid grid-cols-2 gap-3 text-sm">
-                     <div className="text-center p-2 bg-gray-50 dark:bg-gray-900 rounded">
-                       <div className="text-muted-foreground">Orders Today</div>
-                       <div className="font-medium">47</div>
-                     </div>
-                     <div className="text-center p-2 bg-gray-50 dark:bg-gray-900 rounded">
-                       <div className="text-muted-foreground">Avg Execution</div>
-                       <div className="font-medium">1.2s</div>
-                     </div>
-                   </div>
-
-                   <div className="text-xs text-muted-foreground">
-                     Last execution: 2 minutes ago • EURUSD Buy 0.1 lots @ 1.08745
-                   </div>
-                 </div>
-               )}
-
-               {mt5Error && (
-                 <div className="p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded-lg">
-                   <div className="flex items-center gap-2">
-                     <XCircle className="w-4 h-4 text-red-600" />
-                     <span className="text-sm text-red-800 dark:text-red-200">{mt5Error}</span>
-                   </div>
-                 </div>
-               )}
-
-               {!mt5Status.connected && !mt5Loading && (
-                 <Button
-                   variant="outline"
-                   size="sm"
-                   onClick={reconnectMT5}
-                   className="w-full"
-                 >
-                   <RefreshCw className="w-4 h-4 mr-2" />
-                   Reconnect MT5
-                 </Button>
-               )}
-             </CardContent>
-           </Card>
-
-          {/* Risk Management Alerts */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Shield className="w-5 h-5" />
-                Risk Management Alerts
+          <Card className="bg-card/50 border-border/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Target className="w-4 h-4" />
+                Active Positions
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                {[
-                  { type: 'warning', message: 'High exposure on EURUSD - 45% of total capital', time: '5 min ago', severity: 'high' },
-                  { type: 'info', message: 'Daily loss limit: 2.1% used of 5% limit', time: '12 min ago', severity: 'medium' },
-                  { type: 'success', message: 'Risk score improved to 72/100', time: '1 hour ago', severity: 'low' },
-                  { type: 'error', message: 'GBPUSD position exceeded stop loss distance', time: '2 hours ago', severity: 'high' }
-                ].map((alert, index) => (
-                  <div key={index} className={`flex items-start gap-3 p-3 border rounded-lg ${
-                    alert.severity === 'high' ? 'border-red-200 bg-red-50 dark:bg-red-950/20' :
-                    alert.severity === 'medium' ? 'border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20' :
-                    'border-green-200 bg-green-50 dark:bg-green-950/20'
-                  }`}>
-                    <div className="mt-0.5">
-                      {alert.type === 'error' && <XCircle className="w-4 h-4 text-red-600" />}
-                      {alert.type === 'warning' && <AlertTriangle className="w-4 h-4 text-yellow-600" />}
-                      {alert.type === 'info' && <Activity className="w-4 h-4 text-blue-600" />}
-                      {alert.type === 'success' && <CheckCircle className="w-4 h-4 text-green-600" />}
+              <div className="text-2xl font-bold text-center">{activeTrades}</div>
+              <p className="text-xs text-muted-foreground text-center mb-3">Open trades</p>
+              <div className="space-y-2">
+                {positions.slice(0, 3).map((position, index) => (
+                  <div key={index} className="flex items-center justify-between text-xs">
+                    <span className="font-medium">{position.symbol}</span>
+                    <div className="flex gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => handleClosePosition(position)}
+                      >
+                        Close
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => handleAdjustPosition(position)}
+                      >
+                        Adjust
+                      </Button>
                     </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-foreground">{alert.message}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{alert.time}</p>
-                    </div>
-                    <Badge variant={
-                      alert.severity === 'high' ? 'destructive' :
-                      alert.severity === 'medium' ? 'secondary' : 'default'
-                    } className="text-xs">
-                      {alert.severity}
-                    </Badge>
+                  </div>
+                ))}
+              </div>
+              {positions.length > 3 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full mt-2"
+                  onClick={() => router.push('/trading/positions')}
+                >
+                  View All Positions
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/50 border-border/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Activity className="w-4 h-4" />
+                Recent Alerts
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-1">
+                {alerts.slice(0, 3).map((alert) => (
+                  <div key={alert.id} className="flex items-center gap-2 text-xs">
+                    {alert.type === 'success' && <CheckCircle className="w-3 h-3 text-green-500" />}
+                    {alert.type === 'warning' && <AlertTriangle className="w-3 h-3 text-yellow-500" />}
+                    {alert.type === 'error' && <XCircle className="w-3 h-3 text-red-500" />}
+                    <span className="truncate">{alert.message}</span>
                   </div>
                 ))}
               </div>
             </CardContent>
           </Card>
-
-          <Card>
-             <CardHeader>
-               <CardTitle className="flex items-center gap-2">
-                 <AlertTriangle className="w-5 h-5" />
-                 Market Alerts
-               </CardTitle>
-             </CardHeader>
-             <CardContent>
-               <div className="space-y-3">
-                 {isLoading ? (
-                   // Loading skeletons for alerts
-                   Array.from({ length: 3 }).map((_, index) => (
-                     <div key={index} className="flex items-start gap-3 p-3 border border-border rounded-lg">
-                       <Skeleton className="w-4 h-4 mt-0.5" />
-                       <div className="flex-1">
-                         <Skeleton className="h-4 w-full mb-1" />
-                         <Skeleton className="h-3 w-16" />
-                       </div>
-                     </div>
-                   ))
-                 ) : (
-                   alerts.map((alert) => (
-                   <div key={alert.id} className="flex items-start gap-3 p-3 border border-border rounded-lg">
-                     <div className="mt-0.5">
-                       {alert.type === "success" && <CheckCircle className="w-4 h-4 text-green-600" />}
-                       {alert.type === "warning" && <AlertTriangle className="w-4 h-4 text-yellow-600" />}
-                       {alert.type === "info" && <Activity className="w-4 h-4 text-blue-600" />}
-                       {alert.type === "error" && <XCircle className="w-4 h-4 text-red-600" />}
-                     </div>
-                     <div className="flex-1">
-                       <p className="text-sm text-foreground">{alert.message}</p>
-                       <p className="text-xs text-muted-foreground mt-1">{alert.time}</p>
-                     </div>
-                   </div>
-                   ))
-                 )}
-               </div>
-             </CardContent>
-           </Card>
-
-          {/* Performance Monitoring */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <BarChart3 className="w-5 h-5" />
-                Performance Monitoring
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Real-time Performance Metrics */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="text-center p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                  <div className="text-sm text-muted-foreground mb-1">Today's P&L</div>
-                  <div className="text-lg font-bold text-blue-600">+$847.32</div>
-                  <div className="text-xs text-green-600">+3.2% vs yesterday</div>
-                </div>
-                <div className="text-center p-3 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
-                  <div className="text-sm text-muted-foreground mb-1">Win Rate</div>
-                  <div className="text-lg font-bold text-green-600">76.8%</div>
-                  <div className="text-xs text-green-600">+2.1% this week</div>
-                </div>
-              </div>
-
-              {/* Performance Trends */}
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium">Performance Trends</h4>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Hourly P&L</span>
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-2 bg-gray-200 dark:bg-gray-700 rounded-full">
-                        <div className="w-12 h-2 bg-green-500 rounded-full"></div>
-                      </div>
-                      <span className="text-sm font-medium text-green-600">+$127</span>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Execution Speed</span>
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-2 bg-gray-200 dark:bg-gray-700 rounded-full">
-                        <div className="w-14 h-2 bg-blue-500 rounded-full"></div>
-                      </div>
-                      <span className="text-sm font-medium text-blue-600">1.8s avg</span>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Slippage Control</span>
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-2 bg-gray-200 dark:bg-gray-700 rounded-full">
-                        <div className="w-10 h-2 bg-orange-500 rounded-full"></div>
-                      </div>
-                      <span className="text-sm font-medium text-orange-600">0.8 pips</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Strategy Performance */}
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium">Top Strategies Today</h4>
-                <div className="space-y-2">
-                  {[
-                    { name: 'EURUSD Scalper', pnl: 245.67, trades: 12, winRate: 83 },
-                    { name: 'GBPUSD Trend', pnl: 189.23, trades: 8, winRate: 75 },
-                    { name: 'USDJPY Range', pnl: 156.89, trades: 6, winRate: 67 }
-                  ].map((strategy, index) => (
-                    <div key={index} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-900 rounded">
-                      <div className="flex-1">
-                        <div className="text-sm font-medium">{strategy.name}</div>
-                        <div className="text-xs text-muted-foreground">{strategy.trades} trades • {strategy.winRate}% win rate</div>
-                      </div>
-                      <div className="text-sm font-medium text-green-600">+${strategy.pnl.toFixed(0)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-             <CardHeader>
-               <CardTitle>AI Optimizer Status</CardTitle>
-             </CardHeader>
-             <CardContent className="space-y-4">
-               <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
-                 <div className="flex items-center gap-2">
-                   <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                   <span className="text-sm font-medium text-green-800 dark:text-green-200">AI Optimization Active</span>
-                 </div>
-               </div>
-
-               <div className="space-y-2">
-                 <div className="flex justify-between text-sm">
-                   <span className="text-muted-foreground">Last Optimization:</span>
-                   <span className="font-medium text-foreground">3 min ago</span>
-                 </div>
-                 <div className="flex justify-between text-sm">
-                   <span className="text-muted-foreground">Parameters Adjusted:</span>
-                   <span className="font-medium text-foreground">5</span>
-                 </div>
-                 <div className="flex justify-between text-sm">
-                   <span className="text-muted-foreground">Performance Gain:</span>
-                   <span className="font-medium text-green-600">+2.3%</span>
-                 </div>
-               </div>
-
-               <Button variant="outline" className="w-full bg-transparent">
-                 View Optimization Details
-               </Button>
-             </CardContent>
-           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Trade Controls</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <Button
-                variant="outline"
-                className="w-full justify-start bg-transparent"
-                onClick={async () => {
-                  if (confirm('Are you sure you want to close all positions?')) {
-                    try {
-                      // Emergency close all positions
-                      for (const position of positions) {
-                        await fetch(`/api/trading/orders/${position.position_id}`, {
-                          method: 'DELETE'
-                        })
-                      }
-                      await fetchPositions()
-                    } catch (error) {
-                      console.error('Failed to close positions:', error)
-                    }
-                  }
-                }}
-                disabled={activeTrades === 0}
-              >
-                <XCircle className="w-4 h-4 mr-2" />
-                Close All Positions
-              </Button>
-              <Button
-                variant="outline"
-                className="w-full justify-start bg-transparent"
-                onClick={async () => {
-                  // Refresh all data
-                  await Promise.all([
-                    fetchLiveData(),
-                    fetchPositions(),
-                    fetchRiskMetrics(),
-                  ])
-                }}
-              >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh Dashboard
-              </Button>
-              <Button
-                variant={riskMetrics && riskMetrics.riskScore > 80 ? "destructive" : "outline"}
-                className="w-full justify-start"
-                disabled
-              >
-                <Shield className="w-4 h-4 mr-2" />
-                Risk Management
-              </Button>
-            </CardContent>
-          </Card>
         </div>
-      </div>
-    </div>
-  )
+      )}
+
+    <CustomDashboard />
+  </div>
+)
 }
