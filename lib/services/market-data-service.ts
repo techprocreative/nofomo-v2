@@ -10,6 +10,7 @@ import {
 } from '../types';
 import { cache } from '../cache';
 import { AlphaVantageService } from './alpha-vantage-service';
+import { indicatorWorkerService } from './indicatorWorkerService';
 
 export class MarketDataService {
   private cache: MarketDataCache = {
@@ -646,13 +647,33 @@ export class MarketDataService {
       }
 
       if (historicalData.length >= 14) {
-        const rsi = this.calculateRSI(historicalData.map(d => d.close), 14);
-        if (rsi !== null) analysis.indicators.rsi = rsi;
+        try {
+          const rsi = await indicatorWorkerService.calculateIndicator(
+            `${symbol}-rsi`,
+            'rsi',
+            { prices: historicalData.map(d => d.close), period: 14 }
+          );
+          if (rsi !== null) analysis.indicators.rsi = rsi;
+        } catch (error) {
+          console.warn('Failed to calculate RSI with worker, falling back to main thread:', error);
+          const rsi = this.calculateRSI(historicalData.map(d => d.close), 14);
+          if (rsi !== null) analysis.indicators.rsi = rsi;
+        }
       }
 
       if (historicalData.length >= 26) {
-        const macd = this.calculateMACD(historicalData.map(d => d.close));
-        if (macd) analysis.indicators.macd = macd;
+        try {
+          const macd = await indicatorWorkerService.calculateIndicator(
+            `${symbol}-macd`,
+            'macd',
+            { prices: historicalData.map(d => d.close), fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 }
+          );
+          if (macd) analysis.indicators.macd = macd;
+        } catch (error) {
+          console.warn('Failed to calculate MACD with worker, falling back to main thread:', error);
+          const macd = this.calculateMACD(historicalData.map(d => d.close));
+          if (macd) analysis.indicators.macd = macd;
+        }
       }
 
       // Calculate volatility

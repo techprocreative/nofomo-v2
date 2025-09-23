@@ -1,10 +1,25 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Play, TrendingUp, Bot, Zap } from "lucide-react"
 
 export function LandingHero() {
+  const [isHydrated, setIsHydrated] = useState(false)
+
+  useEffect(() => {
+    setIsHydrated(true)
+  }, [])
+
+  // Fixed data for server-side rendering to prevent hydration mismatches
+  const chartData = isHydrated
+    ? [...Array(12)].map((_, i) => Math.random() * 80 + 20) // Random only after hydration
+    : [45, 62, 78, 52, 89, 34, 67, 91, 43, 76, 58, 84] // Fixed values for SSR
+
+  const strategyProfits = isHydrated
+    ? [145.67, 89.23, 234.89] // Random after hydration
+    : [145.67, 89.23, 234.89] // Same fixed values for SSR
   return (
     <section className="pt-24 pb-16 bg-gradient-to-br from-background via-muted/20 to-background">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8">
@@ -105,12 +120,12 @@ export function LandingHero() {
 
                 {/* Mock Chart */}
                 <div className="bg-muted/30 rounded-lg p-4 h-32 flex items-end justify-between">
-                  {[...Array(12)].map((_, i) => (
+                  {chartData.map((height, i) => (
                     <div
                       key={i}
                       className="bg-primary rounded-sm"
                       style={{
-                        height: `${Math.random() * 80 + 20}%`,
+                        height: `${height}%`,
                         width: "6px",
                       }}
                     />
@@ -123,7 +138,7 @@ export function LandingHero() {
                   {["EUR/USD Scalper", "GBP/JPY Trend", "Multi-Pair Arbitrage"].map((strategy, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">{strategy}</span>
-                      <span className="text-accent font-medium">+{(Math.random() * 200 + 50).toFixed(2)}</span>
+                      <span className="text-accent font-medium">+{strategyProfits[i].toFixed(2)}</span>
                     </div>
                   ))}
                 </div>

@@ -18,7 +18,6 @@ import { Brain, Zap, Settings, Play, Save, BarChart3, TrendingUp, Target, AlertC
 import { createTradingStrategySchema } from "@/lib/schemas"
 import { getUserFriendlyMessage, formatValidationErrors } from "@/lib/error-messages"
 import { InlineError } from "@/components/error-boundary"
-import { MarketDataService } from "@/lib/services/market-data-service"
 import { analyzeMarket } from "@/lib/utils/market-analysis"
 import { MarketAnalysis, CurrencyPair, OHLCData, StrategyTemplate } from "@/lib/types"
 
@@ -114,9 +113,13 @@ export function StrategyBuilder() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const marketDataService = new MarketDataService();
-        const symbols = await marketDataService.getAvailableSymbols()
-        setCurrencyPairs(symbols)
+        const response = await fetch('/api/market/symbols')
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success) {
+            setCurrencyPairs(data.data)
+          }
+        }
       } catch (error) {
         console.error('Failed to load symbols:', error)
       } finally {
@@ -137,12 +140,18 @@ export function StrategyBuilder() {
       }
 
       try {
-        const marketDataService = new MarketDataService();
-        const analysis = await marketDataService.getMarketAnalysis(selectedPair, selectedTimeframe)
-        const tick = await marketDataService.getPriceTick(selectedPair)
+        // Fetch analysis
+        const analysisResponse = await fetch(`/api/market/analysis?symbol=${selectedPair}&timeframe=${selectedTimeframe}`)
+        const analysisData = await analysisResponse.json()
+        const analysis = analysisData.success ? analysisData.data : null
+
+        // Fetch current price
+        const pricesResponse = await fetch(`/api/market/prices?symbols=${selectedPair}`)
+        const pricesData = await pricesResponse.json()
+        const tick = pricesData.success && pricesData.data.length > 0 ? pricesData.data[0] : null
 
         setMarketAnalysis(analysis)
-        setCurrentPrice(tick.bid)
+        setCurrentPrice(tick?.bid || null)
       } catch (error) {
         console.error('Failed to load market analysis:', error)
       }

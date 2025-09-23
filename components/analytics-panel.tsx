@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { BarChart3, TrendingUp, TrendingDown, DollarSign, Target, Activity, Calendar, Download, Zap, BarChart, PieChart, Brain } from "lucide-react"
-import { MarketDataService } from "@/lib/services/market-data-service"
 import { analyzeMarket } from "@/lib/utils/market-analysis"
 import { MarketAnalysis, OHLCData } from "@/lib/types"
 
@@ -42,8 +41,9 @@ export function AnalyticsPanel() {
 
   const fetchMarketAnalysis = async (symbol: string) => {
     try {
-      const marketDataService = new MarketDataService();
-      const historicalData = await marketDataService.getHistoricalData(symbol, "1h", 100)
+      const response = await fetch(`/api/market/history?symbol=${symbol}&timeframe=1h&limit=100`)
+      const data = await response.json()
+      const historicalData = data.success ? data.data : []
       const analysis = analyzeMarket(historicalData)
 
       setMarketData(prev => new Map(prev.set(symbol, {

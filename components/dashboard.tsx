@@ -35,7 +35,6 @@ import { useRealtimeTrades } from "@/hooks/use-realtime-trades"
 import { useRealtimeStrategies } from "@/hooks/use-realtime-strategies"
 import { useRealtimeBots } from "@/hooks/use-realtime-bots"
 import { useRealtimeAnalytics } from "@/hooks/use-realtime-analytics"
-import { MarketDataService } from "@/lib/services/market-data-service"
 
 interface DashboardProps {
   activeView: string
@@ -46,6 +45,13 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
   const router = useRouter()
   const supabase = createClient()
 
+  // Hydration state
+  const [isHydrated, setIsHydrated] = useState(false)
+
+  useEffect(() => {
+    setIsHydrated(true)
+  }, [])
+
   // Real-time data hooks
   const { trades, isLoading: tradesLoading, isConnected: tradesConnected, lastUpdate: tradesLastUpdate } = useRealtimeTrades()
   const { strategies, isLoading: strategiesLoading, isConnected: strategiesConnected, lastUpdate: strategiesLastUpdate } = useRealtimeStrategies()
@@ -54,39 +60,27 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
 
   // Market data state
   const [marketPrices, setMarketPrices] = useState<Map<string, any>>(new Map())
-  const [marketSubscriptions, setMarketSubscriptions] = useState<Map<string, (price: any) => void>>(new Map())
 
   // Initialize market data service
   useEffect(() => {
     const initMarketData = async () => {
-      const marketDataService = new MarketDataService();
       const popularSymbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD']
       try {
-        for (const symbol of popularSymbols) {
-          const priceCallback = (price: any) => {
-            setMarketPrices(prev => new Map(prev.set(symbol, {
-              price: price.bid,
-              change: price.bid - (prev.get(symbol)?.price || price.bid),
-              changePercent: ((price.bid - (prev.get(symbol)?.price || price.bid)) / (prev.get(symbol)?.price || price.bid)) * 100,
-              lastUpdated: price.timestamp
-            })))
-          }
-
-          // Subscribe to real-time prices (mock implementation for now)
-          // marketDataService.subscribeToPrices(symbol, priceCallback)
-          setMarketSubscriptions(prev => new Map(prev.set(symbol, priceCallback)))
-
-          // Get initial price
-          try {
-            const initialPrice = await marketDataService.getPriceTick(symbol)
-            setMarketPrices(prev => new Map(prev.set(symbol, {
-              price: initialPrice.bid,
-              change: 0,
-              changePercent: 0,
-              lastUpdated: initialPrice.timestamp
-            })))
-          } catch (error) {
-            console.error(`Failed to get initial price for ${symbol}:`, error)
+        // Get initial prices
+        const response = await fetch(`/api/market/prices?symbols=${popularSymbols.join(',')}`)
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.data) {
+            const newPrices = new Map()
+            data.data.forEach((tick: any) => {
+              newPrices.set(tick.symbol, {
+                price: tick.bid,
+                change: 0,
+                changePercent: 0,
+                lastUpdated: tick.timestamp
+              })
+            })
+            setMarketPrices(newPrices)
           }
         }
       } catch (error) {
@@ -95,13 +89,6 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
     }
 
     initMarketData()
-
-    return () => {
-      // Cleanup subscriptions
-      marketSubscriptions.forEach((callback, symbol) => {
-        // marketDataService.unsubscribeFromPrices(symbol, callback)
-      })
-    }
   }, [])
 
   // Risk metrics calculation
@@ -166,6 +153,66 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
 
   // Computed stats from real-time data
   const stats = useMemo(() => {
+    // Use static values during server-side rendering to prevent hydration mismatches
+    if (!isHydrated) {
+      return [
+        {
+          title: "Portfolio Value",
+          value: "$0.00",
+          change: "+$0.00",
+          trend: "up",
+          icon: DollarSign,
+          description: "Total unrealized P&L",
+          secondary: "$0.00 unrealized"
+        },
+        {
+          title: "Active Strategies",
+          value: "0",
+          change: "+0",
+          trend: "up",
+          icon: Bot,
+          description: "Running algorithms",
+          secondary: "0 total strategies"
+        },
+        {
+          title: "Today's P&L",
+          value: "$0.00",
+          change: "+$0.00",
+          trend: "up",
+          icon: TrendingUp,
+          description: "Daily performance",
+          secondary: "0 trades today"
+        },
+        {
+          title: "Win Rate",
+          value: "0.0%",
+          change: "+0.0%",
+          trend: "up",
+          icon: Activity,
+          description: "Success ratio",
+          secondary: "0/0 trades"
+        },
+        {
+          title: "Risk Score",
+          value: "0",
+          change: "+0.0",
+          trend: "up",
+          icon: Shield,
+          description: "Portfolio risk level",
+          secondary: "0 margin used"
+        },
+        {
+          title: "Sharpe Ratio",
+          value: "0.00",
+          change: "+0.00",
+          trend: "up",
+          icon: Target,
+          description: "Risk-adjusted returns",
+          secondary: "Annualized"
+        }
+      ]
+    }
+
     const totalPnL = trades?.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0) || 0
     const activeStrategiesCount = strategies?.filter(s => s.status === 'active').length || 0
     const closedTrades = trades?.filter(t => t.status === 'closed') || []
@@ -237,10 +284,48 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
         secondary: "Annualized"
       }
     ]
-  }, [trades, strategies, riskMetrics])
+  }, [trades, strategies, riskMetrics, isHydrated])
 
   // Computed active strategies from real-time data with enhanced metrics
   const activeStrategies = useMemo(() => {
+    // Use static data during server-side rendering
+    if (!isHydrated) {
+      return [
+        {
+          id: '1',
+          name: 'EURUSD Momentum',
+          status: 'running',
+          pnl: '+$125.43',
+          trades: 12,
+          winRate: '75%',
+          pair: 'EURUSD',
+          timeframe: '1h',
+          exposure: 2500,
+          riskLevel: 'medium',
+          drawdown: 45.67,
+          avgTradeSize: 1250,
+          openPositions: 2,
+          lastTrade: null
+        },
+        {
+          id: '2',
+          name: 'GBPUSD Trend',
+          status: 'running',
+          pnl: '+$89.21',
+          trades: 8,
+          winRate: '62%',
+          pair: 'GBPUSD',
+          timeframe: '4h',
+          exposure: 1800,
+          riskLevel: 'low',
+          drawdown: 23.45,
+          avgTradeSize: 900,
+          openPositions: 1,
+          lastTrade: null
+        }
+      ]
+    }
+
     return strategies?.map(strategy => {
       const strategyTrades = trades?.filter(t => t.strategy_id === strategy.id) || []
       const closedTrades = strategyTrades.filter(t => t.status === 'closed')
@@ -279,7 +364,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
         lastTrade: strategyTrades.length > 0 ? strategyTrades[strategyTrades.length - 1].created_at : null
       }
     }) || []
-  }, [strategies, trades])
+  }, [strategies, trades, isHydrated])
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -321,7 +406,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                   </span>
                   {tradesLastUpdate && (
                     <span className="text-xs text-muted-foreground" suppressHydrationWarning>
-                      Last update: {tradesLastUpdate.toLocaleTimeString()}
+                      Last update: {tradesLastUpdate?.toLocaleTimeString() || 'Loading...'}
                     </span>
                   )}
                 </div>
@@ -373,7 +458,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                       </div>
                     </CardHeader>
                     <CardContent className="relative">
-                      <div className="text-3xl font-bold text-foreground mb-2">{stat.value}</div>
+                      <div className="text-3xl font-bold text-foreground mb-2" suppressHydrationWarning>{stat.value}</div>
                       <div className="flex items-center gap-2">
                         {stat.trend === "up" ? (
                           <TrendingUp className="h-4 w-4 text-green-500" />
@@ -382,6 +467,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                         )}
                         <span
                           className={`text-sm font-medium ${stat.trend === "up" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}
+                          suppressHydrationWarning
                         >
                           {stat.change}
                         </span>
@@ -503,7 +589,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                               </div>
                               <div className="flex items-center gap-1">
                                 <DollarSign className="w-3 h-3" />
-                                Exposure: ${strategy.exposure.toFixed(0)}
+                                Exposure: <span suppressHydrationWarning>${strategy.exposure.toFixed(0)}</span>
                               </div>
                               <div className="flex items-center gap-1">
                                 <Target className="w-3 h-3" />
@@ -521,7 +607,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                                   : "text-red-600 dark:text-red-400"
                               }`}
                             >
-                              {strategy.pnl}
+                              <span suppressHydrationWarning>{strategy.pnl}</span>
                             </div>
                             <div className="text-xs text-muted-foreground">
                               Drawdown: ${strategy.drawdown.toFixed(2)}
@@ -564,7 +650,7 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                       {strategy.lastTrade && (
                         <div className="mt-3 pt-3 border-t border-border/50">
                           <div className="text-xs text-muted-foreground" suppressHydrationWarning>
-                            Last trade: {new Date(strategy.lastTrade).toLocaleString()}
+                            Last trade: {strategy.lastTrade ? new Date(strategy.lastTrade).toLocaleString() : 'No trades yet'}
                           </div>
                         </div>
                       )}
@@ -592,17 +678,17 @@ export function Dashboard({ activeView, onViewChange }: DashboardProps) {
                     <div className="grid grid-cols-3 gap-4">
                       <div className="text-center p-3 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800">
                         <div className="text-sm text-muted-foreground mb-1">Portfolio Risk</div>
-                        <div className="text-xl font-bold text-red-600">{riskMetrics.riskScore}</div>
+                        <div className="text-xl font-bold text-red-600" suppressHydrationWarning>{riskMetrics.riskScore}</div>
                         <div className="text-xs text-muted-foreground">Out of 100</div>
                       </div>
                       <div className="text-center p-3 bg-orange-50 dark:bg-orange-950/20 rounded-lg border border-orange-200 dark:border-orange-800">
                         <div className="text-sm text-muted-foreground mb-1">Margin Used</div>
-                        <div className="text-xl font-bold text-orange-600">{riskMetrics.marginUsed.toFixed(1)}%</div>
+                        <div className="text-xl font-bold text-orange-600" suppressHydrationWarning>{riskMetrics.marginUsed.toFixed(1)}%</div>
                         <div className="text-xs text-muted-foreground">Of total capital</div>
                       </div>
                       <div className="text-center p-3 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
                         <div className="text-sm text-muted-foreground mb-1">Max Drawdown</div>
-                        <div className="text-xl font-bold text-yellow-600">{riskMetrics.maxDrawdown.toFixed(1)}%</div>
+                        <div className="text-xl font-bold text-yellow-600" suppressHydrationWarning>{riskMetrics.maxDrawdown.toFixed(1)}%</div>
                         <div className="text-xs text-muted-foreground">Current period</div>
                       </div>
                     </div>
